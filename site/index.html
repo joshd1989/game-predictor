@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>Game Predictor · NHL, NBA, NFL</title>
+  <meta name="description" content="Win probabilities for NHL, NBA, and NFL games from team stats, injuries, rest, and goalies. Sportsbook lines are used only to find disagreement. Estimates, not guarantees.">
+  <link rel="canonical" href="https://joshd1989.github.io/game-predictor/">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script>
+    try {
+      var t = localStorage.getItem("gp-theme");
+      if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+    } catch (e) {}
+  </script>
+</head>
+<body>
+  <a class="skip" href="#slate">Skip to the slate</a>
+  <header class="top">
+    <div class="top-row">
+      <div>
+        <p class="kicker">Joshua's model</p>
+        <h1>Game Predictor</h1>
+      </div>
+      <button type="button" id="theme" class="ghost">Theme</button>
+    </div>
+    <p class="lede">Win probabilities for the next week of NHL, NBA, and NFL games, from team stats, advanced metrics, injuries, goalies, and rest. A sportsbook line is used only to measure where the model disagrees with the market.</p>
+    <p class="honest">These are model estimates, not guarantees. Bet only what you can lose. The stats-only backtest lost money against closing lines in the NHL and NBA, and finished slightly ahead in the NFL on a small sample.</p>
+    <p id="asof" class="asof">Loading the slate…</p>
+    <ul id="sources" class="sources" hidden></ul>
+  </header>
+  <nav class="jump" aria-label="On this page">
+    <a href="#slate">Slate</a>
+    <a href="#parlays">Parlays</a>
+    <a href="#value">Value</a>
+    <a href="#games">Games</a>
+    <a href="#detail">Detail</a>
+    <a href="#weights">Weights</a>
+    <a href="#record">Record</a>
+    <a href="#how">Method</a>
+  </nav>
+  <main>
+    <section id="slate" class="card">
+      <div class="section-head">
+        <h2>Slate</h2>
+        <p>All times Eastern. Lines usually open about a day before the game.</p>
+      </div>
+      <div id="kept"></div>
+      <div id="leagues" class="segment" role="radiogroup" aria-label="League"></div>
+      <div id="metrics" class="metrics"></div>
+      <div class="filters">
+        <label>Day
+          <select id="day"><option value="all">All 7 days</option></select>
+        </label>
+        <label>Sort by
+          <select id="sort">
+            <option value="edge">Edge vs market</option>
+            <option value="conf">Model confidence</option>
+            <option value="time">Start time</option>
+          </select>
+        </label>
+        <label>Value threshold, probability points
+          <input id="thr" type="number" inputmode="decimal" min="0" max="40" step="0.5" value="4">
+        </label>
+        <label>Bankroll ($)
+          <input id="bank" type="number" inputmode="decimal" min="0" step="10" value="1000">
+        </label>
+        <label>Kelly fraction (%)
+          <input id="kelly" type="number" inputmode="decimal" min="0" max="100" step="1" value="25">
+        </label>
+        <div class="toggles">
+          <label class="check"><input id="oddsOnly" type="checkbox"> Only games with lines</label>
+          <label class="check"><input id="valueOnly" type="checkbox"> Only value picks</label>
+        </div>
+      </div>
+    </section>
+
+    <section id="parlays" class="card">
+      <div class="section-head">
+        <h2>Daily parlays</h2>
+        <p>Small keeps the 2 or 3 strongest model sides (3 only if they still combine to 35% or better) and needs 3 priced games. Big keeps 4 to 6 sides, as many as stay at 15% or better, and needs 5 priced games. Wild is a long shot aimed at +1000 or longer: 5 to 8 sides chosen to maximize the model's expected value, preferring a side where the model beats the no-vig price when two tickets tie. One leg per game, best posted price, real moneylines only. A day is left out of a ticket when it does not have enough priced games, and Wild is left out when no 5–8 leg ticket reaches +1000.</p>
+      </div>
+      <p class="warn-copy">Parlay odds multiply the book's margin on every leg, so the house edge grows as you add legs. Legs are treated as independent. The model has lost money against closing lines in its NHL and NBA backtests, so treat every ticket, and especially Wild, as a long shot rather than a lock. The model probability shown is the model's real combined chance.</p>
+      <div id="parlays-body"></div>
+    </section>
+
+    <section id="value" class="card">
+      <div class="section-head">
+        <h2>Best value picks</h2>
+        <p>Edge is the model win probability minus the market's no-vig win probability. EV and the stake use the best price found across the books. A gap above 12 points often means the market has lineup news the model has not priced.</p>
+      </div>
+      <div id="value-body"></div>
+    </section>
+
+    <section id="games" class="card">
+      <div class="section-head">
+        <h2>All games</h2>
+        <p>The pick is the side the model favours. The edge is on that side. A green edge names a value bet.</p>
+      </div>
+      <div id="games-body"></div>
+    </section>
+
+    <section id="detail" class="card">
+      <div class="section-head">
+        <h2>Game detail</h2>
+        <p>Model versus market, the projected score, what is driving the margin, and the books.</p>
+      </div>
+      <div id="detail-body"></div>
+    </section>
+
+    <section id="weights" class="card">
+      <div class="section-head">
+        <h2>Model weights</h2>
+        <p>Moving a slider recomputes every probability, edge, stake, and parlay on the page, including Wild.</p>
+      </div>
+      <div id="tune" class="segment" role="radiogroup" aria-label="League to tune"></div>
+      <div id="sliders"></div>
+      <button type="button" id="reset" class="ghost">Reset to defaults</button>
+    </section>
+
+    <section id="record" class="card">
+      <div class="section-head">
+        <h2>Model track record</h2>
+        <p>Walk-forward test on this season's completed games: each game is predicted using only results from before it. The market column is the consensus closing moneyline with the vig removed. Changing the weights above does not change this table. It is the stats-only version stored with the data.</p>
+      </div>
+      <div id="record-body"></div>
+    </section>
+
+    <section id="how" class="card">
+      <div class="section-head">
+        <h2>How the model works</h2>
+      </div>
+      <div id="how-body"></div>
+    </section>
+  </main>
+  <footer>
+    <p>Estimates, not guarantees. The backtest lost to the closing line in the NHL and NBA. The NFL result was slightly positive on a small sample. Nothing here is a promise about the next game.</p>
+    <p>Data is loaded from <code>data.json</code> in this site. Missing numbers stay unavailable.</p>
+  </footer>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
