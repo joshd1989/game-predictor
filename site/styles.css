@@ -241,8 +241,41 @@ th { color: var(--muted); font-size: 0.72rem; letter-spacing: 0.05em; text-trans
   letter-spacing: 0.03em;
   text-transform: uppercase;
 }
-.day-block { margin-top: 16px; }
-.day-block h3 { margin-top: 0; }
+.fold {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  margin-top: 10px;
+  background: var(--bg);
+}
+.fold > summary {
+  cursor: pointer;
+  min-height: 44px;
+  padding: 10px 12px 10px 34px;
+  position: relative;
+  list-style: none;
+  touch-action: manipulation;
+}
+.fold > summary::-webkit-details-marker { display: none; }
+.fold > summary::marker { content: ""; }
+.fold > summary::before {
+  content: "";
+  position: absolute;
+  left: 14px;
+  top: 18px;
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+}
+.fold[open] > summary::before { transform: rotate(45deg); top: 15px; }
+.fold-line { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+.fold-title { font-family: var(--serif); font-size: 1.08rem; font-weight: 560; }
+.fold-meta { color: var(--muted); font-weight: 600; font-variant-numeric: tabular-nums; }
+.fold-line .tag { margin-left: 6px; }
+.fold-body { padding: 0 12px 12px; }
+.fold .fold { background: var(--bg-elev); }
+.fold-body .honest { margin: 0 0 10px; }
 .props { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin: 10px 0; }
 .props div { border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; }
 .props dt { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }

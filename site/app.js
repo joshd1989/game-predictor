@@ -2,7 +2,7 @@ import {
   LGS, COMPS, ADJS, FORM_N, UNIT, BOOK, STATUS,
   sanitize, defaults, allRows, buildParlays, kellyStake,
   dayKey, dayLabel, timeLabel, formatAsOf, pct, sgn, fmtML, fx,
-  prodP, prodD, dec, bookName, americanFromDec,
+  prodP, prodD, dec, bookName, americanFromDec, easternOffsetHours,
 } from "./model.js";
 
 const SVG = "http://www.w3.org/2000/svg";
@@ -254,16 +254,47 @@ function metric(value, label, detail) {
   return el("div", { class: "metric" }, [el("b", {}, value), el("span", {}, label), el("small", {}, detail)]);
 }
 
-function parlaySummary(name, ls, kFrac, bankroll, longShot) {
+const parlaySeen = new Set();
+const parlayOpen = new Set();
+
+function todayEtKey() {
+  const now = Date.now();
+  const shifted = new Date(now - easternOffsetHours(now) * 3600 * 1000);
+  return shifted.toISOString().slice(0, 10);
+}
+
+function parlayIsOpen(key, defaultOpen) {
+  if (!parlaySeen.has(key)) {
+    parlaySeen.add(key);
+    if (defaultOpen) parlayOpen.add(key);
+  }
+  return parlayOpen.has(key);
+}
+
+function fold(key, summaryKids, bodyKids, defaultOpen) {
+  const node = document.createElement("details");
+  node.className = "fold";
+  node.open = parlayIsOpen(key, defaultOpen);
+  node.addEventListener("toggle", () => {
+    if (node.open) parlayOpen.add(key);
+    else parlayOpen.delete(key);
+  });
+  const summary = document.createElement("summary");
+  summary.append(el("span", { class: "fold-line" }, summaryKids));
+  node.append(summary, el("div", { class: "fold-body" }, bodyKids));
+  return node;
+}
+
+function parlayFigures(ls, kFrac, bankroll) {
   const d = prodD(ls);
   const p = prodP(ls);
   const ev = p * d - 1;
   const b = d - 1;
   const frac = b > 0 ? Math.max(0, (b * p - (1 - p)) / b) * kFrac * bankroll : 0;
   const am = americanFromDec(d);
-  const label = longShot ? el("span", {}, [name, el("span", { class: "tag" }, "Long shot")]) : name;
+  const pays = `$${(10 * d).toFixed(2)}${am == null ? "" : ` (${fmtML(am)})`}`;
   const stake = frac > 0 ? `${money(frac)} pays ${money(frac * d)}` : "No stake, negative EV";
-  return [label, String(ls.length), pct(p), pct(1 / d), `$${(10 * d).toFixed(2)}${am == null ? "" : ` (${fmtML(am)})`}`, toneEV(ev), stake];
+  return { p, d, pays, row: [String(ls.length), pct(p), pct(1 / d), pays, toneEV(ev), stake] };
 }
 
 function renderParlays(inView, kFrac, bankroll) {
@@ -273,15 +304,17 @@ function renderParlays(inView, kFrac, bankroll) {
     body.replaceChildren(el("p", { class: "empty" }, "No day in this view has enough priced games for a parlay."));
     return;
   }
+  const today = todayEtKey();
   const blocks = parlays.map((d) => {
-    const summaries = [];
-    const legRows = [];
+    const tickets = [];
+    const names = [];
     [["Small", d.small, false], ["Big", d.big, false], ["Wild", d.wild, true]].forEach(([name, ls, wild]) => {
       if (!ls) return;
-      summaries.push(parlaySummary(name, ls, kFrac, bankroll, wild));
-      ls.forEach((x) => {
+      names.push(name);
+      const fig = parlayFigures(ls, kFrac, bankroll);
+      const legRows = ls.map((x) => {
         const edge = typeof x.edge === "number" ? { text: `${sgn(x.edge * 100, 1)} pts`, cls: x.edge > 0 ? "pos" : x.edge < 0 ? "neg" : "" } : "unavailable";
-        legRows.push([
+        return [
           wild ? el("span", {}, [name, el("span", { class: "tag" }, "Long shot")]) : name,
           `${x.r.L} ${matchup(x.r)}, ${timeLabel(x.r.g[0])}`,
           x.pick,
@@ -289,22 +322,33 @@ function renderParlays(inView, kFrac, bankroll) {
           bookName(x.book),
           pct(x.p),
           edge,
-        ]);
+        ];
       });
+      const inside = [];
+      if (wild) {
+        inside.push(el("p", { class: "honest" }, `Wild is a long shot. ${pct(fig.p)} is the model's combined probability for these ${ls.length} legs, not a confidence costume. The ticket was chosen because it had the highest model expected value among 5–8 leg combinations that pay +1000 or longer.`));
+      }
+      inside.push(table(["Legs", "Model hit", "Book-implied", "Pays on $10", "Model EV", "Kelly stake"], [fig.row]));
+      inside.push(table(["Parlay", "Leg (ET)", "Pick", "Best price", "Book", "Model", "Edge"], legRows));
+      const title = wild
+        ? el("span", { class: "fold-title" }, [name, el("span", { class: "tag" }, "Long shot")])
+        : el("span", { class: "fold-title" }, name);
+      tickets.push(fold(`ticket:${d.day}:${name}`, [
+        title,
+        el("span", { class: "fold-meta" }, `${ls.length} legs`),
+        el("span", { class: "fold-meta" }, `${pct(fig.p)} model`),
+        el("span", { class: "fold-meta" }, `${fig.pays.split(" (")[0]} on $10`),
+      ], inside, false));
     });
-    const notes = [];
-    if (d.wild) {
-      const p = prodP(d.wild);
-      notes.push(el("p", { class: "note" }, `Wild is a long shot. ${pct(p)} is the model's combined probability for these ${d.wild.length} legs, not a confidence costume. The ticket was chosen because it had the highest model expected value among 5–8 leg combinations that pay +1000 or longer.`));
-    } else if (d.n >= 5) {
-      notes.push(el("p", { class: "note" }, "No Wild ticket today: no 5–8 leg combination of model sides reaches +1000 at the best posted prices."));
+    const dayBody = [...tickets];
+    if (!d.wild && d.n >= 5) {
+      dayBody.push(el("p", { class: "note" }, "No Wild ticket today: no 5–8 leg combination of model sides reaches +1000 at the best posted prices."));
     }
-    return el("div", { class: "day-block" }, [
-      el("h3", {}, `${dayLabel(d.day)} · ${d.n} priced games`),
-      table(["Parlay", "Legs", "Model hit", "Book-implied", "Pays on $10", "Model EV", "Kelly stake"], summaries),
-      table(["Parlay", "Leg (ET)", "Pick", "Best price", "Book", "Model", "Edge"], legRows),
-      ...notes,
-    ]);
+    return fold(`day:${d.day}`, [
+      el("span", { class: "fold-title" }, dayLabel(d.day)),
+      el("span", { class: "fold-meta" }, `${d.n} priced games`),
+      el("span", { class: "fold-meta" }, names.join(", ") || "No ticket"),
+    ], dayBody, d.day === today);
   });
   body.replaceChildren(...blocks);
 }
