@@ -164,7 +164,7 @@ function renderLeagueButtons(all) {
   const box = $("leagues");
   const options = [{ id: "ALL", label: "All", n: all.length }].concat(LGS.map((L) => ({ id: L, label: L, n: state.data.L[L].games.length })));
   box.replaceChildren(...options.map((o) => {
-    const b = el("button", { type: "button", role: "radio", "aria-checked": state.view === o.id ? "true" : "false", onclick: () => { state.view = o.id; state.sel = ""; renderDynamic(); } }, [o.label, el("span", { class: "count" }, String(o.n))]);
+    const b = el("button", { type: "button", class: `lg lg-${o.id}`, role: "radio", "aria-checked": state.view === o.id ? "true" : "false", onclick: () => { state.view = o.id; state.sel = ""; renderDynamic(); } }, [o.label, el("span", { class: "count" }, String(o.n))]);
     return b;
   }));
 }
@@ -271,9 +271,9 @@ function parlayIsOpen(key, defaultOpen) {
   return parlayOpen.has(key);
 }
 
-function fold(key, summaryKids, bodyKids, defaultOpen) {
+function fold(key, summaryKids, bodyKids, defaultOpen, extraClass) {
   const node = document.createElement("details");
-  node.className = "fold";
+  node.className = extraClass ? `fold ${extraClass}` : "fold";
   node.open = parlayIsOpen(key, defaultOpen);
   node.addEventListener("toggle", () => {
     if (node.open) parlayOpen.add(key);
@@ -338,7 +338,7 @@ function renderParlays(inView, kFrac, bankroll) {
         el("span", { class: "fold-meta" }, `${ls.length} legs`),
         el("span", { class: "fold-meta" }, `${pct(fig.p)} model`),
         el("span", { class: "fold-meta" }, `${fig.pays.split(" (")[0]} on $10`),
-      ], inside, false));
+      ], inside, false, `ticket ticket-${name.toLowerCase()}`));
     });
     const dayBody = [...tickets];
     if (!d.wild && d.n >= 5) {
@@ -363,7 +363,7 @@ function renderValue(values, kFrac, bankroll) {
       `${sideAbbr(r, b.side)} moneyline`,
       pct(b.p),
       pct(b.side === "h" ? r.q : 1 - r.q),
-      { text: `${sgn(b.edge * 100, 1)}${gap}`, cls: "pos" },
+      { text: `${sgn(b.edge * 100, 1)}${gap}`, cls: "badge badge-value" },
       `${fmtML(b.ml)} ${bookName(b.book)}`,
       money(ev),
       money(stakeOf(r, kFrac, bankroll)),
@@ -384,13 +384,16 @@ function renderGames(rows) {
     const mk = r.q == null ? "No line yet" : pct(pickH ? r.q : 1 - r.q);
     const edge = r.q == null ? "" : sgn(((pickH ? r.edgeH : r.edgeA)) * 100, 1);
     const edgeCell = isValue(r, readNumbers().threshold) && r.best
-      ? { text: `${sideAbbr(r, r.best.side)} ${sgn(r.best.edge * 100, 1)}`, cls: "pos" }
+      ? { text: `${sideAbbr(r, r.best.side)} ${sgn(r.best.edge * 100, 1)}`, cls: "badge badge-value" }
       : edge;
     const tot = `${showNum(r.g[7], 1)}${o && o[5] != null ? ` vs ${o[5]}` : ""}`;
     const open = state.sel === r.id;
+    const match = el("span", { class: "matchup" }, state.view === "ALL"
+      ? [el("span", { class: `lg-badge lg-${r.L}` }, r.L), document.createTextNode(matchup(r))]
+      : matchup(r));
     return [
       `${dayLabel(dayKey(r.g[0]))}, ${timeLabel(r.g[0])}`,
-      state.view === "ALL" ? `${r.L}  ${matchup(r)}` : matchup(r),
+      match,
       `${pk} ${pct(pp)}`,
       mk,
       edgeCell,
@@ -562,7 +565,7 @@ function renderWeights() {
   if (state.view === "ALL") {
     tune.hidden = false;
     tune.replaceChildren(...LGS.map((L) => el("button", {
-      type: "button", role: "radio", "aria-checked": state.tuneL === L ? "true" : "false",
+      type: "button", class: `lg lg-${L}`, role: "radio", "aria-checked": state.tuneL === L ? "true" : "false",
       onclick: () => { state.tuneL = L; renderDynamic(); },
     }, L)));
   } else {
@@ -607,15 +610,16 @@ function slider(key, label, min, max, step, fmt) {
 function renderRecord(calL) {
   const rows = LGS.map((L) => {
     const b = state.data.L[L].bt;
+    const units = b.bets ? `${b.bets[2] > 0 ? "+" : ""}${fx(b.bets[2], 1)} units` : null;
     return [
-      L,
+      el("span", { class: `lg-badge lg-${L}` }, L),
       String(b.n),
       pct(b.hit),
       b.mkt ? pct(b.mkt[1]) : "unavailable",
       fx(b.brier, 3),
       b.mkt ? fx(b.mkt[2], 3) : "unavailable",
       b.bets ? `${b.bets[0]} bets, ${b.bets[1]} won` : "unavailable",
-      b.bets ? `${b.bets[2] > 0 ? "+" : ""}${fx(b.bets[2], 1)} units` : "unavailable",
+      units ? { text: units, cls: b.bets[2] > 0 ? "pos" : "neg" } : "unavailable",
     ];
   });
   const cal = state.data.L[calL].bt.calib;

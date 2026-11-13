@@ -8,6 +8,9 @@
   <meta name="description" content="Win probabilities for NHL, NBA, and NFL games from team stats, injuries, rest, and goalies. Sportsbook lines are used only to find disagreement. Estimates, not guarantees.">
   <link rel="canonical" href="https://joshd1989.github.io/game-predictor/">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
   <script>
     try {
@@ -19,10 +22,12 @@
 <body>
   <a class="skip" href="#slate">Skip to the slate</a>
   <header class="top">
+    <div class="league-stripe" aria-hidden="true"><span></span><span></span><span></span></div>
     <div class="top-row">
       <div>
         <p class="kicker">Joshua's model</p>
         <h1>Game Predictor</h1>
+        <p class="league-pills" aria-hidden="true"><span class="pill nhl">NHL</span><span class="pill nba">NBA</span><span class="pill nfl">NFL</span></p>
       </div>
       <button type="button" id="theme" class="ghost">Theme</button>
     </div>
