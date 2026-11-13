@@ -6,11 +6,11 @@ Public slate for Joshua's NHL, NBA, and NFL model.
 
 The page shows win probabilities for the next seven days, value picks against the no-vig market, per-game detail, adjustable weights, daily parlays, and a walk-forward track record. The browser loads `site/data.json`. It does not bake the numbers into the page. A missing stat stays unavailable.
 
-These are model estimates, not guarantees. The stats-only walk-forward backtest lost money against closing moneylines in the NHL and NBA. The NFL result was slightly positive on a small sample. The site repeats that every time you open the track record.
+These are model estimates, not guarantees. The track record on the site is computed by the pipeline on each refresh. It shows the NHL results model and the xG-plus-goalie model on the same out-of-sample games, and it prints each league's Brier score next to the market. A lower Brier score is the more accurate set of probabilities. Value badges appear only for a league with at least 250 out-of-sample flat bets and a positive unit total. The NBA toggle can show those edges anyway.
 
 ## What a probability is
 
-The model builds a home-minus-away margin from season results, recent form, home/road splits, rest, injuries, and a league-specific efficiency stat (MoneyPuck expected goals, Basketball-Reference ratings, or nflverse EPA). Home-ice or home-court advantage is this season's average home margin, blended with a long-run prior. A normal curve turns that margin into a win probability.
+The NBA and NFL models build a home-minus-away margin from season results, recent form, home/road splits, rest, injuries, and a league efficiency stat (Basketball-Reference ratings or nflverse EPA). The NHL model, when MoneyPuck loads, uses a recency-weighted all-situations expected-goal rating shrunk toward last season, plus the starting goalie's GSAx per start shrunk toward last season. Coefficients are fit on 2025-26. Other NHL factors stay on the page at weight 0. If MoneyPuck fails, the NHL page falls back to the older results model. A normal curve turns the margin into a win probability.
 
 The betting line is not an input to that probability. Lines are attached afterwards so the page can show where the model and the market disagree. Moving the weight sliders recomputes every probability, edge, stake, and parlay in the browser.
 
@@ -31,7 +31,7 @@ Legs are treated as independent. Parlay prices multiply the book's margin, so th
 | Source | Used for |
 | --- | --- |
 | [ESPN public JSON](https://site.api.espn.com/apis/site/v2/sports) | Schedules, scores, injuries, and a DraftKings line when the other books have not posted |
-| [Action Network public scoreboard](https://api.actionnetwork.com/web/v1/scoreboard) | Moneylines from up to eight books, plus the consensus close used in the backtest |
+| [Action Network v2 scoreboard](https://api.actionnetwork.com/web/v2/scoreboard/nhl) | Moneylines from up to eight books, plus the consensus close used in the backtest. A book whose no-vig price is far from the median is dropped |
 | [MoneyPuck](https://moneypuck.com/data.htm) | NHL expected goals, Corsi, PDO, goalie GSAx |
 | [NHL stats API](https://api.nhle.com/stats/rest/en/team/summary) | Power play, penalty kill, shots |
 | [DailyFaceoff](https://www.dailyfaceoff.com/starting-goalies) | Projected starting goalies. Cloudflare often blocks GitHub runners; the site then keeps the last good projections and says so |

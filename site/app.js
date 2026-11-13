@@ -21,6 +21,7 @@ const state = {
   tuneL: "NHL",
   sel: "",
   showAll: false,
+  showNba: false,
   data: null,
 };
 
@@ -65,7 +66,7 @@ function loadSettings() {
 function saveSettings() {
   try {
     localStorage.setItem("gp-settings", JSON.stringify({
-      thr: state.thr, bank: state.bank, kelly: state.kelly, w: state.w,
+      v: 3, thr: state.thr, bank: state.bank, kelly: state.kelly, showNba: state.showNba, w: state.w,
     }));
   } catch { /* private mode */ }
 }
@@ -91,8 +92,15 @@ function rowsNow() {
   return allRows(state.data, state.w);
 }
 
+function allowsValue(L) {
+  const gate = state.data.L[L] && state.data.L[L].valueGate;
+  if (!gate) return true;
+  if (gate.eligible) return true;
+  return L === "NBA" && state.showNba;
+}
+
 function isValue(r, threshold) {
-  return !!(r.best && r.best.edge >= threshold);
+  return allowsValue(r.L) && !!(r.best && r.best.edge >= threshold);
 }
 
 function stakeOf(r, kFrac, bankroll) {
@@ -238,9 +246,16 @@ function renderDynamic() {
     metric(String(inView.length), "Games in window", state.view === "ALL" ? "NHL, NBA and NFL" : state.view),
     metric(String(withOdds), "Games with a posted line", "No line means the number stays off"),
     metric(String(values.length), "Value picks", `Edge of ${state.thr || 0} points or more`),
-    metric(pct(data.L[calL].bt.hit), `${calL} backtest hit rate`, `${data.L[calL].bt.n} games, stats only`),
+    metric(pct(data.L[calL].bt.hit), `${calL} backtest hit rate`, `${data.L[calL].bt.n} games`),
   );
 
+  const gate = $("value-gate");
+  if (gate) gate.textContent = valueGateText();
+  const nbaWrap = $("showNbaWrap");
+  if (nbaWrap) {
+    const nbaGate = data.L.NBA.valueGate;
+    nbaWrap.hidden = !!(nbaGate && nbaGate.eligible);
+  }
   renderParlays(inView, kFrac, bankroll);
   renderValue(values, kFrac, bankroll);
   renderGames(rows);
@@ -248,6 +263,19 @@ function renderDynamic() {
   renderWeights();
   renderRecord(calL);
   saveSettings();
+}
+
+function valueGateText() {
+  const bits = LGS.map((L) => {
+    const g = state.data.L[L].valueGate;
+    if (!g) return `${L}: not gated`;
+    const units = typeof g.units === "number" ? `${g.units > 0 ? "+" : ""}${Number(g.units).toFixed(1)} units` : "units unavailable";
+    let status = g.eligible ? "badges on" : "badges off";
+    if (!g.eligible && L === "NBA" && state.showNba) status = "badges on because the toggle is checked";
+    return `${L} ${g.n} flat bets, ${units}, ${status}`;
+  });
+  const minBets = (state.data.L.NHL.valueGate && state.data.L.NHL.valueGate.minBets) || 250;
+  return `${bits.join(". ")}. A league's badges stay off unless it has at least ${minBets} out-of-sample flat bets and a positive unit total.`;
 }
 
 function metric(value, label, detail) {
@@ -369,9 +397,17 @@ function renderValue(values, kFrac, bankroll) {
       money(stakeOf(r, kFrac, bankroll)),
     ];
   });
+  const gatedOff = viewLeagues().filter((L) => {
+    const g = state.data.L[L].valueGate;
+    return g && !allowsValue(L);
+  });
+  const names = gatedOff.length <= 1 ? gatedOff.join("") : gatedOff.length === 2 ? gatedOff.join(" and ") : `${gatedOff.slice(0, -1).join(", ")}, and ${gatedOff[gatedOff.length - 1]}`;
+  const empty = gatedOff.length
+    ? `${names} value cards stay off. A league needs at least 250 out-of-sample flat bets and a positive result. The line under this heading has the count.`
+    : "No game in this view clears the value threshold.";
   $("value-body").replaceChildren(shown.length
     ? table(["Game (ET)", "Bet", "Model", "Market", "Edge", "Best price", "EV per $100", "Stake"], shown)
-    : el("p", { class: "empty" }, "No game in this view clears the value threshold."));
+    : el("p", { class: "empty" }, empty));
 }
 
 function renderGames(rows) {
@@ -474,7 +510,7 @@ function renderDetail(all, rows) {
     stat.push(statRow("PDO (shooting % + save %)", n(xa[4]), n(xh[4])));
     stat.push(statRow("Power play / penalty kill", `${n(xa[5])}% / ${n(xa[6])}%`, `${n(xh[5])}% / ${n(xh[6])}%`));
     const gl = (G) => (Array.isArray(G) ? `${G[0]}, ${G[1] == null ? "no NHL games logged this season" : `${sgn(G[1])} GSAx per game`} (${String(G[2] || "").toLowerCase()})` : "unavailable");
-    stat.push(statRow("Goalie (DailyFaceoff)", gl(g[10]), gl(g[9])));
+    stat.push(statRow(state.data.L.NHL.model === "xg" ? "Goalie, shrunk GSAx per start" : "Goalie (DailyFaceoff)", gl(g[10]), gl(g[9])));
   } else if (L === "NBA") {
     const xa = extra(a); const xh = extra(h);
     stat.push(statRow("Offensive / defensive rating", `${n(xa[0])} / ${n(xa[1])}`, `${n(xh[0])} / ${n(xh[1])}`));
@@ -492,7 +528,8 @@ function renderDetail(all, rows) {
 
   const notes = [];
   if (L === "NHL" && (g[9] || g[10])) {
-    const nm = (G, ab) => (Array.isArray(G) ? `${ab} ${G[0]} (${String(G[2] || "").toLowerCase()}${G[1] == null ? "" : `, ${sgn(G[1])} GSAx/game`})` : `${ab} not posted`);
+    const gsLabel = state.data.L.NHL.model === "xg" ? "shrunk GSAx/start" : "GSAx/game";
+    const nm = (G, ab) => (Array.isArray(G) ? `${ab} ${G[0]} (${String(G[2] || "").toLowerCase()}${G[1] == null ? "" : `, ${sgn(G[1])} ${gsLabel}`})` : `${ab} not posted`);
     notes.push({ tx: `Goalies: ${nm(g[10], g[2])} vs ${nm(g[9], g[1])}.`, src: `https://www.dailyfaceoff.com/starting-goalies/${dayKey(g[0])}` });
   }
   const news = [];
@@ -607,26 +644,68 @@ function slider(key, label, min, max, step, fmt) {
   ]);
 }
 
-function renderRecord(calL) {
-  const rows = LGS.map((L) => {
+function asRecord(b) {
+  if (!b) return null;
+  if (!Array.isArray(b)) return b;
+  const mkt = typeof b[3] === "number" && typeof b[4] === "number" ? [b[0], b[3], b[4]] : null;
+  const bets = typeof b[7] === "number" ? [b[5], b[6], b[7]] : null;
+  return { n: b[0], hit: b[1], brier: b[2], mkt, bets };
+}
+
+function recordRow(L, label, b) {
+  b = asRecord(b);
+  if (!b) return null;
+  const units = b.bets ? `${b.bets[2] > 0 ? "+" : ""}${fx(b.bets[2], 1)} units` : null;
+  return [
+    el("span", { class: `lg-badge lg-${L}` }, label),
+    String(b.n),
+    pct(b.hit),
+    b.mkt ? pct(b.mkt[1]) : "unavailable",
+    fx(b.brier, 3),
+    b.mkt ? fx(b.mkt[2], 3) : "unavailable",
+    b.bets ? `${b.bets[0]} bets, ${b.bets[1]} won` : "unavailable",
+    units ? { text: units, cls: b.bets[2] > 0 ? "pos" : "neg" } : "unavailable",
+  ];
+}
+
+function marketNote() {
+  const comparable = LGS.filter((L) => state.data.L[L].bt && state.data.L[L].bt.mkt);
+  if (comparable.length && comparable.every((L) => state.data.L[L].marketBetter)) {
+    const who = state.data.L.NHL.bt && state.data.L.NHL.bt.before ? "the NHL after row, the NBA, and the NFL" : "every league";
+    return `The market's Brier score is lower than the model's for ${who}. A lower Brier score means the probabilities were closer to the results. The market is still the more accurate number. Edges are a shortlist to research, not a signal on their own.`;
+  }
+  const bits = comparable.map((L) => {
     const b = state.data.L[L].bt;
-    const units = b.bets ? `${b.bets[2] > 0 ? "+" : ""}${fx(b.bets[2], 1)} units` : null;
-    return [
-      el("span", { class: `lg-badge lg-${L}` }, L),
-      String(b.n),
-      pct(b.hit),
-      b.mkt ? pct(b.mkt[1]) : "unavailable",
-      fx(b.brier, 3),
-      b.mkt ? fx(b.mkt[2], 3) : "unavailable",
-      b.bets ? `${b.bets[0]} bets, ${b.bets[1]} won` : "unavailable",
-      units ? { text: units, cls: b.bets[2] > 0 ? "pos" : "neg" } : "unavailable",
-    ];
+    return `${L} model ${fx(b.brier, 3)} vs market ${fx(b.mkt[2], 3)}`;
+  });
+  return `Brier score, lower is more accurate: ${bits.join("; ") || "market comparison unavailable"}. Edges are a shortlist to research, not a signal on their own.`;
+}
+
+function recordNote() {
+  const samples = LGS.map((L) => `${L}: ${state.data.L[L].sample || "this season"}`).join(". ");
+  const nhl = state.data.L.NHL;
+  const extra = nhl.model === "xg" && nhl.bt && nhl.bt.before
+    ? " NHL before is the old results model on the same out-of-sample games. NHL after is the xG and goalie model. NBA and NFL formulas are unchanged."
+    : " NBA and NFL formulas are unchanged.";
+  return `${samples}.${extra} Calibration below is the favourite's predicted win chance for the league selected above.`;
+}
+
+function renderRecord(calL) {
+  const rows = [];
+  LGS.forEach((L) => {
+    const lg = state.data.L[L];
+    const b = lg.bt;
+    if (L === "NHL" && b.before) {
+      const before = recordRow(L, "NHL before", b.before);
+      if (before) rows.push(before);
+    }
+    rows.push(recordRow(L, L === "NHL" && b.before ? "NHL after" : L, b));
   });
   const cal = state.data.L[calL].bt.calib;
   const kids = [
     table(["League", "Games", "Model hit", "Market hit", "Model Brier", "Market Brier", "Flat bets at 3+ pt edge", "Result"], rows),
-    el("p", { class: "note" }, `Calibration for ${calL}, by the favourite's predicted win chance. The backtest uses results only (season margin, form, splits, rest). Advanced stats and injuries are season snapshots and were not replayed game by game.`),
-    el("p", { class: "honest" }, "The stats-only version lost to the closing market in the NHL and NBA and finished slightly ahead in the NFL on a small sample. Treat an edge as a shortlist to research, not as a signal on its own."),
+    el("p", { class: "note" }, recordNote()),
+    el("p", { class: "honest" }, marketNote()),
   ];
   if (cal.length) {
     const max = 100;
@@ -656,27 +735,32 @@ function renderRecord(calL) {
 function renderHow() {
   const data = state.data;
   const weeks = data.L.NFL.pbpWeeks;
+  const xg = data.L.NHL.model === "xg";
+  const coef = data.L.NHL.coef || null;
+  const coefLine = coef
+    ? ` The NHL coefficients on the page were fit on ${coef.season || "2025-26"} (${coef.n} games): ${coef.bXg} goals per expected-goal point, ${coef.bGoalie} per GSAx point, home edge ${coef.hfa}. Recency half-life ${coef.halfLife} games, team shrinkage ${coef.kTeam}, goalie shrinkage ${coef.kGoalie}. Other NHL factors and rest start at weight 0 and stay adjustable. If MoneyPuck cannot be read, the page uses the older results model.`
+    : "";
   $("how-body").replaceChildren(
     el("p", { class: "eq" }, "margin = s × (Σ weight × factor) / (Σ weight) + home + rest + injuries + goalie"),
     el("p", { class: "eq" }, "P(home win) = Φ(margin / σ)"),
-    el("p", {}, `Each factor is a home-minus-away strength gap, in goals per game for the NHL and points per game for the NBA and NFL. s is the early-season trust setting. σ is ${data.L.NHL.sigma} goals in the NHL, ${data.L.NBA.sigma} points in the NBA, and ${data.L.NFL.sigma} points in the NFL. Home advantage is this season's average home margin blended with a long-run prior: ${showNum(data.L.NHL.hfa, 2)} goals in the NHL, ${showNum(data.L.NBA.hfa, 2)} points in the NBA, ${showNum(data.L.NFL.hfa, 2)} points in the NFL.`),
+    el("p", {}, `Each factor is a home-minus-away strength gap, in goals per game for the NHL and points per game for the NBA and NFL. s is the early-season trust setting. σ is ${data.L.NHL.sigma} goals in the NHL, ${data.L.NBA.sigma} points in the NBA, and ${data.L.NFL.sigma} points in the NFL. Home advantage is ${showNum(data.L.NHL.hfa, 2)} goals in the NHL, ${showNum(data.L.NBA.hfa, 2)} points in the NBA, ${showNum(data.L.NFL.hfa, 2)} points in the NFL.${coefLine}`),
     table(["Factor", "NHL", "NBA", "NFL"], [
-      ["Season margin with schedule strength", "Yes", "Yes", "Yes"],
-      ["Recent form", "Last 10", "Last 10", "Last 4"],
-      ["Home / road splits, shrunk for a small sample", "Yes", "Yes", "Yes"],
-      ["Advanced efficiency", "xG and Corsi (MoneyPuck)", "SRS, net rating, pace (Basketball-Reference)", `EPA per play${weeks ? `, weeks 1–${weeks}` : ""} (nflverse)`],
-      ["Injuries", "Points per game, shrunk", "BPM and minutes", "Starting quarterback only"],
-      ["Goalie", "DailyFaceoff projection and GSAx", "—", "—"],
-      ["Rest", "Back-to-back", "Back-to-back", "Rest-day gap, including byes"],
-      ["Head-to-head", "Yes, shrunk", "Yes, shrunk", "Yes, shrunk"],
+      ["Season margin with schedule strength", xg ? "Available, weight 0" : "Yes", "Yes", "Yes"],
+      ["Recent form", xg ? "Available, weight 0" : "Last 10", "Last 10", "Last 4"],
+      ["Home / road splits, shrunk for a small sample", xg ? "Available, weight 0" : "Yes", "Yes", "Yes"],
+      ["Advanced efficiency", xg ? "Recency-weighted xG, shrunk toward last season" : "xG and Corsi (MoneyPuck)", "SRS, net rating, pace (Basketball-Reference)", `EPA per play${weeks ? `, weeks 1–${weeks}` : ""} (nflverse)`],
+      ["Injuries", xg ? "Available, weight 0" : "Points per game, shrunk", "BPM and minutes", "Starting quarterback only"],
+      ["Goalie", xg ? "GSAx per start, shrunk toward last season" : "DailyFaceoff projection and GSAx", "—", "—"],
+      ["Rest", xg ? "Available, weight 0" : "Back-to-back", "Back-to-back", "Rest-day gap, including byes"],
+      ["Head-to-head", xg ? "Available, weight 0" : "Yes, shrunk", "Yes, shrunk", "Yes, shrunk"],
     ]),
-    el("p", {}, "Not included: travel distance, referees, weather, and confirmed lineups beyond the injury report. NHL goalies are projections unless a source marks them confirmed. Games without a posted line show the model only."),
-    el("p", { class: "honest" }, "These are model estimates, not guarantees. The backtest lost money versus closing lines in the NHL and NBA. The NFL sample was slightly positive and small. Bet only what you are comfortable losing."),
+    el("p", {}, "Not included: travel distance, referees, weather, and confirmed lineups beyond the injury report. NHL starters come from DailyFaceoff when that name is in the MoneyPuck goalie list, otherwise the goalie with the most starts. Games without a posted line show the model only."),
+    el("p", { class: "honest" }, `These are model estimates, not guarantees. Bet only what you are comfortable losing. ${marketNote()}`),
     el("h3", {}, "Where the numbers come from"),
     el("ul", {}, [
       linkItem("ESPN public scoreboard and injury JSON", "https://site.api.espn.com/apis/site/v2/sports"),
-      linkItem("Action Network public scoreboard (moneylines from up to eight books)", "https://api.actionnetwork.com/web/v1/scoreboard"),
-      linkItem("MoneyPuck expected goals, Corsi, and goalie GSAx", "https://moneypuck.com/data.htm"),
+      linkItem("Action Network v2 scoreboard (moneylines, books far from the median dropped)", "https://api.actionnetwork.com/web/v2/scoreboard/nhl"),
+      linkItem("MoneyPuck expected goals and goalie GSAx", "https://moneypuck.com/data.htm"),
       linkItem("NHL official team summary (special teams and shots)", "https://api.nhle.com/stats/rest/en/team/summary"),
       linkItem("DailyFaceoff projected starting goalies", "https://www.dailyfaceoff.com/starting-goalies"),
       linkItem("Basketball-Reference team ratings and player BPM", "https://www.basketball-reference.com/leagues/NBA_2027.html"),
@@ -705,6 +789,8 @@ function bind() {
   });
   $("oddsOnly").addEventListener("change", () => { state.oddsOnly = $("oddsOnly").checked; renderDynamic(); });
   $("valueOnly").addEventListener("change", () => { state.valueOnly = $("valueOnly").checked; renderDynamic(); });
+  const showNba = $("showNba");
+  if (showNba) showNba.addEventListener("change", () => { state.showNba = showNba.checked; renderDynamic(); });
   $("reset").addEventListener("click", () => {
     state.w = defaults(state.data);
     builtTune = "";
@@ -722,13 +808,24 @@ async function main() {
     state.data = data;
     const saved = loadSettings();
     const base = defaults(data);
-    if (saved.w && typeof saved.w === "object") {
+    if (saved.v === 3 && saved.w && typeof saved.w === "object") {
       for (const k of Object.keys(base)) {
         const v = saved.w[k];
         if (typeof v === "number" && isFinite(v)) base[k] = v;
       }
     }
     state.w = base;
+    if (data.L.NHL.model === "xg") {
+      const xg = COMPS.NHL.find((c) => c.key === "xg");
+      if (xg) xg.label = "Recency-weighted xG, shrunk toward last season";
+      const goalie = ADJS.find((a) => a.key === "goalie");
+      if (goalie) goalie.label = "Starting goalie GSAx, shrunk";
+    }
+    if (saved.v === 3 && typeof saved.showNba === "boolean") {
+      state.showNba = saved.showNba;
+      const box = $("showNba");
+      if (box) box.checked = state.showNba;
+    }
     if (typeof saved.thr === "string" || typeof saved.thr === "number") state.thr = String(saved.thr);
     if (typeof saved.bank === "string" || typeof saved.bank === "number") state.bank = String(saved.bank);
     if (typeof saved.kelly === "string" || typeof saved.kelly === "number") state.kelly = String(saved.kelly);

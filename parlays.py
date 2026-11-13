@@ -56,7 +56,8 @@ def to_et(iso):
 def legs(data):
     out = []
     for L, v in data["L"].items():
-        weights = W[L]
+        weights = [0, 0, 0, 1, 0, 0] if L == "NHL" and v.get("model") == "xg" else W[L]
+        xg_model = L == "NHL" and v.get("model") == "xg"
         for g in v["games"]:
             o = g[8] if len(g) > 8 else None
             if not o:
@@ -70,10 +71,12 @@ def legs(data):
                     continue
                 num += w * c
                 den += w
-            shrink = v.get("shrink") or 0
-            hfa = 0 if neutral else (v.get("hfa") or 0) 
+            shrink = 1 if xg_model else (v.get("shrink") or 0)
+            hfa = 0 if neutral else (v.get("hfa") or 0)
             adj = g[6] if isinstance(g[6], list) else [0, 0, 0]
-            margin = (shrink * num / den if den else 0) + hfa + (adj[0] or 0) + (adj[1] or 0) + ((adj[2] or 0) if L == "NHL" else 0)
+            rest = 0 if xg_model else (adj[0] or 0)
+            inj = 0 if xg_model else (adj[1] or 0)
+            margin = (shrink * num / den if den else 0) + hfa + rest + inj + ((adj[2] or 0) if L == "NHL" else 0)
             p_home = phi(margin / v["sigma"]) if v.get("sigma") else 0.5
             side_home = p_home >= 0.5
             p = p_home if side_home else 1 - p_home

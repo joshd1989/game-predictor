@@ -32,7 +32,7 @@
       <button type="button" id="theme" class="ghost">Theme</button>
     </div>
     <p class="lede">Win probabilities for the next week of NHL, NBA, and NFL games, from team stats, advanced metrics, injuries, goalies, and rest. A sportsbook line is used only to measure where the model disagrees with the market.</p>
-    <p class="honest">These are model estimates, not guarantees. Bet only what you can lose. The stats-only backtest lost money against closing lines in the NHL and NBA, and finished slightly ahead in the NFL on a small sample.</p>
+    <p class="honest">These are model estimates, not guarantees. Bet only what you can lose. The track record is this page's own backtest, and a lower Brier score is the more accurate set of probabilities.</p>
     <p id="asof" class="asof">Loading the slate…</p>
     <ul id="sources" class="sources" hidden></ul>
   </header>
@@ -78,6 +78,7 @@
         <div class="toggles">
           <label class="check"><input id="oddsOnly" type="checkbox"> Only games with lines</label>
           <label class="check"><input id="valueOnly" type="checkbox"> Only value picks</label>
+          <label class="check" id="showNbaWrap"><input id="showNba" type="checkbox"> Show NBA edges anyway</label>
         </div>
       </div>
     </section>
@@ -87,14 +88,15 @@
         <h2>Daily parlays</h2>
         <p>Small keeps the 2 or 3 strongest model sides (3 only if they still combine to 35% or better) and needs 3 priced games. Big keeps 4 to 6 sides, as many as stay at 15% or better, and needs 5 priced games. Wild is a long shot aimed at +1000 or longer: 5 to 8 sides chosen to maximize the model's expected value, preferring a side where the model beats the no-vig price when two tickets tie. One leg per game, best posted price, real moneylines only. A day is left out of a ticket when it does not have enough priced games, and Wild is left out when no 5–8 leg ticket reaches +1000.</p>
       </div>
-      <p class="warn-copy">Parlay odds multiply the book's margin on every leg, so the house edge grows as you add legs. Legs are treated as independent. The model has lost money against closing lines in its NHL and NBA backtests, so treat every ticket, and especially Wild, as a long shot rather than a lock. The model probability shown is the model's real combined chance.</p>
+      <p class="warn-copy">Parlay odds multiply the book's margin on every leg, so the house edge grows as you add legs. Legs are treated as independent. Read the track record before treating a ticket as anything but a long shot, especially Wild. The model probability shown is the model's real combined chance.</p>
       <div id="parlays-body"></div>
     </section>
 
     <section id="value" class="card">
       <div class="section-head">
         <h2>Best value picks</h2>
-        <p>Edge is the model win probability minus the market's no-vig win probability. EV and the stake use the best price found across the books. A gap above 12 points often means the market has lineup news the model has not priced.</p>
+        <p>Edge is the model win probability minus the market's no-vig win probability. EV and the stake use the best price found across the books. A gap above 12 points often means the market has lineup news the model has not priced. Badges show only for leagues with a profitable record of at least 250 out-of-sample flat bets.</p>
+        <p id="value-gate" class="note"></p>
       </div>
       <div id="value-body"></div>
     </section>
@@ -128,7 +130,7 @@
     <section id="record" class="card">
       <div class="section-head">
         <h2>Model track record</h2>
-        <p>Walk-forward test on this season's completed games: each game is predicted using only results from before it. The market column is the consensus closing moneyline with the vig removed. Changing the weights above does not change this table. It is the stats-only version stored with the data.</p>
+        <p>Numbers from this refresh. NHL before is the older results model and NHL after is the expected-goals and goalie model, scored on games that were not used to fit the coefficients being graded. NBA and NFL keep their existing formulas. The market column is the consensus closing moneyline with the vig removed. Moving the sliders does not change this table.</p>
       </div>
       <div id="record-body"></div>
     </section>
@@ -141,7 +143,7 @@
     </section>
   </main>
   <footer>
-    <p>Estimates, not guarantees. The backtest lost to the closing line in the NHL and NBA. The NFL result was slightly positive on a small sample. Nothing here is a promise about the next game.</p>
+    <p>Estimates, not guarantees. The track record is the comparison with the closing line. Nothing here is a promise about the next game.</p>
     <p>Data is loaded from <code>data.json</code> in this site. Missing numbers stay unavailable.</p>
   </footer>
   <script type="module" src="app.js"></script>

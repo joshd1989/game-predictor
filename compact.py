@@ -105,6 +105,26 @@ def main():
             entry["keptFrom"] = v["keptFrom"]
         if "pbpWeeks" in v:
             entry["pbpWeeks"] = v["pbpWeeks"]
+        entry["model"] = v.get("model") or "results"
+        gate = v.get("valueGate") if isinstance(v.get("valueGate"), dict) else None
+        if gate:
+            entry["valueGate"] = {"eligible": bool(gate.get("eligible")), "n": gate.get("n") or 0, "wins": gate.get("wins"), "units": r(gate.get("units"), 2), "minBets": gate.get("minBets") or 250}
+        entry["marketBetter"] = bool(v.get("marketBetter"))
+        if v.get("sample"):
+            entry["sample"] = v.get("sample")
+        if v.get("coef"):
+            entry["coef"] = v.get("coef")
+
+        def brief(bt0):
+            if not isinstance(bt0, dict) or not bt0.get("n"):
+                return None
+            m = bt0.get("market") if isinstance(bt0.get("market"), dict) else {}
+            b0 = bt0.get("bets") if isinstance(bt0.get("bets"), dict) else {}
+            return [bt0.get("n"), r(bt0.get("hit"), 3), r(bt0.get("brier"), 3), r(m.get("marketHit"), 3) if m else None, r(m.get("marketBrier"), 3) if m else None, b0.get("n"), b0.get("wins"), r(b0.get("units"), 2) if isinstance(b0.get("units"), (int, float)) else None]
+
+        if isinstance(bt.get("before"), dict):
+            entry["bt"]["before"] = brief(bt.get("before"))
+        entry["bt"]["after"] = brief(bt)
         out["L"][L] = entry
     dest = os.path.join(HERE, "site", "data.json")
     os.makedirs(os.path.dirname(dest), exist_ok=True)

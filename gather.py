@@ -24,7 +24,10 @@ import time
 import traceback
 import unicodedata
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from zoneinfo import ZoneInfo
+
+import nhl_xg
 
 import pandas as pd
 
@@ -250,7 +253,11 @@ def norm(s):
 
 
 def nick(name):
-    return norm((name or "").split()[-1])
+    last = norm((name or "").split()[-1])
+    # Utah was the Hockey Club in 2025-26 and the Mammoth after. Both nick to utah.
+    if "utah" in (name or "").lower():
+        return "utah"
+    return last
 
 
 LEAGUES = {
@@ -364,12 +371,55 @@ def season_events(L):
     return games
 
 
-def an_games(L, day, maxage=3 * 3600):
-    q = f"week={day}&season=2026" if isinstance(day, int) else f"date={day.strftime('%Y%m%d')}"
-    d = getj(f"https://api.actionnetwork.com/web/v1/scoreboard/{LEAGUES[L]['an']}?period=game&bookIds={BOOKIDS}&{q}", maxage=maxage)
+def _v2_moneyline(rows):
+    home = away = None
+    for row in rows or []:
+        if row.get("is_live") or row.get("period") not in (None, "event", "game"):
+            continue
+        if row.get("side") == "home":
+            home = row
+        elif row.get("side") == "away":
+            away = row
+    return home, away
+
+
+def parse_v2_game(g):
+    if not isinstance(g, dict):
+        return None
+    teams = []
+    for t in g.get("teams") or []:
+        if isinstance(t, dict) and t.get("full_name"):
+            teams.append({"id": t.get("id"), "full_name": t.get("full_name")})
+    odds = []
+    for bid, blob in (g.get("markets") or {}).items():
+        try:
+            book_id = int(bid)
+        except (TypeError, ValueError):
+            continue
+        event = (blob or {}).get("event") or {}
+        home, away = _v2_moneyline(event.get("moneyline"))
+        if not home or not away or home.get("odds") is None or away.get("odds") is None:
+            continue
+        total = next((x.get("value") for x in (event.get("total") or []) if x.get("side") == "over" and not x.get("is_live")), None)
+        spread = next((x.get("value") for x in (event.get("spread") or []) if x.get("side") == "home" and not x.get("is_live")), None)
+        odds.append({"book_id": book_id, "ml_home": home.get("odds"), "ml_away": away.get("odds"), "total": total, "spread_home": spread})
+    if len(teams) < 2 or not odds:
+        return None
+    return {
+        "home_team_id": g.get("home_team_id"), "away_team_id": g.get("away_team_id"),
+        "start_time": g.get("start_time"), "teams": teams, "odds": odds,
+    }
+
+
+def an_games(L, day, maxage=3 * 3600, season=None):
+    if isinstance(day, int):
+        q = f"week={day}&season={season or 2026}"
+    else:
+        q = f"date={day.strftime('%Y%m%d')}"
+    d = getj(f"https://api.actionnetwork.com/web/v2/scoreboard/{LEAGUES[L]['an']}?bookIds={BOOKIDS}&{q}", maxage=maxage)
     if d is None:
         return None
-    return d.get("games") or []
+    return [g for g in (parse_v2_game(x) for x in (d.get("games") or [])) if g]
 
 
 def slim_an(g):
@@ -390,8 +440,8 @@ def slim_an(g):
     return {"home_team_id": g.get("home_team_id"), "away_team_id": g.get("away_team_id"), "start_time": g.get("start_time"), "teams": teams, "odds": odds}
 
 
-def an_token(day):
-    return f"week:{day}" if isinstance(day, int) else day.isoformat()
+def an_token(day, season=None):
+    return f"week:{season or 2026}:{day}" if isinstance(day, int) else day.isoformat()
 
 
 def index_an(games):
@@ -405,8 +455,8 @@ def index_an(games):
     return idx
 
 
-def load_an(L, days, historical=False):
-    """Fetch Action Network slates. Old dates reuse a saved copy; a failed day keeps its last copy."""
+def load_an(L, days, historical=False, season=None):
+    """Fetch Action Network v2 slates. Old dates reuse a saved copy; a failed day keeps its last copy."""
     key = f"an_{L}_{'close' if historical else 'upcoming'}"
     snap = load_snap(key) or {"data": {"tokens": {}}, "at": None}
     tokens = (snap.get("data") or {}).get("tokens") or {}
@@ -416,23 +466,35 @@ def load_an(L, days, historical=False):
     fresh = 0
     changed = False
     collected = []
+    pending = []
     for day in days:
-        tok = an_token(day)
+        tok = an_token(day, season)
         old = tokens.get(tok) or []
         reuse = historical and not isinstance(day, int) and day < TODAY - dt.timedelta(days=2) and bool(old)
         if reuse:
             collected.extend(old)
             continue
-        got = an_games(L, day, maxage=3 * 3600 if not historical else 6 * 3600)
+        pending.append((day, tok, old))
+
+    def pull(item):
+        day, tok, old = item
+        got = an_games(L, day, maxage=3 * 3600 if not historical else 12 * 3600, season=season)
+        return tok, old, got
+
+    pulled = []
+    if pending:
+        workers = 8 if len(pending) > 4 else 1
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            pulled = list(pool.map(pull, pending))
+    for tok, old, got in pulled:
         if got is None:
-            failed_days.append(day.isoformat() if not isinstance(day, int) else tok)
+            failed_days.append(tok)
             collected.extend(old)
             continue
-        slim = [x for x in (slim_an(g) for g in got) if x]
-        tokens[tok] = slim
+        tokens[tok] = got
         changed = True
         fresh += 1
-        collected.extend(slim)
+        collected.extend(got)
     if changed:
         save_snap(key, {"tokens": tokens})
         at = now_et()
@@ -463,6 +525,20 @@ def match_an(idx, g):
     return None
 
 
+def drop_books_far_from_median(books):
+    """v2 sometimes posts BetMGM with home and away swapped. Drop any book whose
+    no-vig home price is far from the median of the other books."""
+    if len(books) < 4:
+        return books
+    probs = []
+    for b in books:
+        ph, pa = ml_prob(b["mlH"]), ml_prob(b["mlA"])
+        probs.append(ph / (ph + pa))
+    med = sorted(probs)[len(probs) // 2]
+    kept = [b for b, p in zip(books, probs) if abs(p - med) <= 0.12]
+    return kept if len(kept) >= 2 else books
+
+
 def odds_from_an(ag, espn):
     books = []
     cons = None
@@ -486,6 +562,7 @@ def odds_from_an(ag, espn):
             pass
     if not books and cons:
         books = [dict(cons, book="Consensus")]
+    books = drop_books_far_from_median(books)
     if not books:
         return None
     nv = []
@@ -666,6 +743,83 @@ def bt_report(L, rows, shrink, cons_idx):
     if mk["n"]:
         out["market"] = dict(n=mk["n"], marketHit=mk["mhit"] / mk["n"], marketBrier=mk["mbrier"] / mk["n"], modelHit=mk["hit"] / mk["n"], modelBrier=mk["brier"] / mk["n"])
         out["bets"] = dict(n=bets["n"], wins=bets["wins"], units=round(bets["units"], 2), roi=bets["units"] / bets["n"] if bets["n"] else None)
+    return out
+
+
+def consensus_ml(ag):
+    if not ag:
+        return None
+    for b in ag.get("odds") or []:
+        if b.get("book_id") == 15 and b.get("ml_home") is not None and b.get("ml_away") is not None:
+            return b
+    return None
+
+
+def grade_predictions(preds, idx):
+    """Score a list of {iso, homeName, awayName, y, p} against consensus moneylines."""
+    hits = brier = 0
+    mk = dict(n=0, mhit=0, mbrier=0, hit=0, brier=0)
+    bets = dict(n=0, units=0.0, wins=0)
+    buckets = defaultdict(lambda: [0, 0, 0.0])
+    used = 0
+    for pr in preds:
+        p, y = pr["p"], pr["y"]
+        used += 1
+        hits += (p >= 0.5) == (y == 1)
+        brier += (p - y) ** 2
+        fav = max(p, 1 - p)
+        bkt = min(int((fav - 0.5) / 0.05), 4)
+        bb = buckets[bkt]
+        bb[0] += 1
+        bb[1] += (y == 1) == (p >= 0.5)
+        bb[2] += fav
+        fake = {"date": pr["iso"], "home": {"name": pr["homeName"]}, "away": {"name": pr["awayName"]}}
+        o = consensus_ml(match_an(idx, fake))
+        if not o:
+            continue
+        ph_, pa_ = ml_prob(o["ml_home"]), ml_prob(o["ml_away"])
+        q = ph_ / (ph_ + pa_)
+        mk["n"] += 1
+        mk["mhit"] += (q >= 0.5) == (y == 1)
+        mk["mbrier"] += (q - y) ** 2
+        mk["hit"] += (p >= 0.5) == (y == 1)
+        mk["brier"] += (p - y) ** 2
+        for side, ps, ml, win in (("H", p, o["ml_home"], y == 1), ("A", 1 - p, o["ml_away"], y == 0)):
+            qs = q if side == "H" else 1 - q
+            if ps - qs > 0.03:
+                bets["n"] += 1
+                bets["wins"] += win
+                bets["units"] += (ml_dec(ml) - 1) if win else -1
+    if not used:
+        return {"n": 0}
+    out = dict(n=used, hit=hits / used, brier=brier / used,
+               calib=[dict(lo=50 + 5 * b, hi=(55 + 5 * b) if b < 4 else 100, n=v[0], actual=v[1] / v[0], pred=v[2] / v[0]) for b, v in sorted(buckets.items())])
+    if mk["n"]:
+        out["market"] = dict(n=mk["n"], marketHit=mk["mhit"] / mk["n"], marketBrier=mk["mbrier"] / mk["n"], modelHit=mk["hit"] / mk["n"], modelBrier=mk["brier"] / mk["n"])
+        out["bets"] = dict(n=bets["n"], wins=bets["wins"], units=round(bets["units"], 2), roi=bets["units"] / bets["n"] if bets["n"] else None)
+        out["marketBetter"] = out["market"]["marketBrier"] < out["market"]["modelBrier"]
+    return out
+
+
+def value_gate(bt):
+    bets = (bt or {}).get("bets") or {}
+    n = bets.get("n") or 0
+    units = bets.get("units")
+    eligible = isinstance(units, (int, float)) and n >= 250 and units > 0
+    return {"eligible": bool(eligible), "n": n, "wins": bets.get("wins"), "units": units, "minBets": 250}
+
+
+def espn_nfl_season(year):
+    out = []
+    for wk in range(1, 19):
+        d = getj(f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates={year}&seasontype=2&week={wk}", maxage=7 * 86400)
+        if not d:
+            continue
+        for e in d.get("events") or []:
+            g = parse_event(e)
+            if g:
+                g["week"] = wk
+                out.append(g)
     return out
 
 
@@ -893,6 +1047,15 @@ def build_league(L, games, ctx):
     else:
         cons_idx, close_state, _ = load_an(L, past_days, historical=True)
     bt = bt_report(L, rows, shrink, cons_idx)
+    gate_bt = bt
+    if L == "NFL":
+        older = espn_nfl_season(2025)
+        if older:
+            grows, gshrink = backtest(L, older + games)
+            idx_old, _, _ = load_an(L, list(range(1, 19)), historical=True, season=2025)
+            merged = dict(idx_old)
+            merged.update(cons_idx)
+            gate_bt = bt_report(L, grows, gshrink, merged)
     if not bt.get("market") and close_state != "fresh":
         old_bt = prev_lg.get("backtest") or {}
         if old_bt.get("market"):
@@ -904,9 +1067,14 @@ def build_league(L, games, ctx):
     inj = (inj_raw or {}).get("teams") or {}
     inj_ok = inj_raw is not None
     days = [TODAY + dt.timedelta(days=i) for i in range(DAYS)]
-    up_idx, up_state, failed_days = load_an(L, days if L != "NFL" else [TODAY], historical=False)
     end = dt.datetime.combine(TODAY + dt.timedelta(days=DAYS), dt.time(5, 0), tzinfo=dt.timezone.utc).isoformat()[:16]
     now_s = dt.datetime.now(dt.timezone.utc).isoformat()[:16]
+    if L == "NFL":
+        up_weeks = sorted({g["week"] for g in games if g.get("week") and g.get("state") == "pre" and g["date"] >= now_s and g["date"] < end})
+        up_days = up_weeks or [TODAY]
+        up_idx, up_state, failed_days = load_an(L, up_days, historical=False, season=2026)
+    else:
+        up_idx, up_state, failed_days = load_an(L, days, historical=False)
     upcoming = [g for g in games if g["state"] == "pre" and g["date"] >= now_s and g["date"] < end]
     lg_pf = sum(t["pf"] for t in T.values()) / max(1, sum(t["g"] for t in T.values()))
     mp = ctx.get("mp") or {}
@@ -1108,6 +1276,31 @@ def build_league(L, games, ctx):
         aimp = a["injImp"] if isinstance(a.get("injImp"), (int, float)) else 0
         rec["adj"] = dict(rest=round(rest_adj(L, h["rest"], a["rest"]), 3), inj=round(aimp - himp, 3),
                           goalie=round((h.get("gAdj") or 0) - (a.get("gAdj") or 0), 3) if L == "NHL" else 0)
+        pack = ctx.get("nhl_pack")
+        if L == "NHL" and pack:
+            coef = pack["coef"]
+            ratings = pack["ratings"]
+            goalies = pack["goalies"]
+            most = pack["most"]
+            def goalie_name(info, abbr):
+                posted = (info.get("goalie") or {}).get("n")
+                if posted and nhl_xg.gkey(posted) in goalies:
+                    return posted
+                return most.get(abbr) or posted
+            def shrunk_gs(name):
+                recg = goalies.get(nhl_xg.gkey(name or ""))
+                return recg["shrunk"] if recg else 0.0
+            hn, an = goalie_name(h, h["a"]), goalie_name(a, a["a"])
+            C["xg"] = round(coef["bXg"] * (ratings.get(h["a"], {}).get("xgd", 0.0) - ratings.get(a["a"], {}).get("xgd", 0.0)), 3)
+            rec["adj"]["goalie"] = round(coef["bGoalie"] * (shrunk_gs(hn) - shrunk_gs(an)), 3)
+            for info, name in ((h, hn), (a, an)):
+                recg = goalies.get(nhl_xg.gkey(name or ""))
+                if not name:
+                    continue
+                info["goalie"] = dict(n=name, st=(info.get("goalie") or {}).get("st") or "Most starts", gp=(recg or {}).get("gp") or 0,
+                                      gsax=None if not recg or recg.get("shrunk") is None else round(recg["shrunk"], 2), sv=(info.get("goalie") or {}).get("sv"))
+                if recg and isinstance(recg.get("raw"), (int, float)):
+                    notes.append(dict(tx=f"{info['a']} goalie {name}: raw {recg['raw']:+.2f} GSAx/start over {recg['gp']} starts, shrunk to {recg['shrunk']:+.2f} (last season {recg['prior']:+.2f}).", src="https://moneypuck.com/data.htm"))
         pool = list(bref_team.values()) if bref_team else []
         if len(pool) < 10:
             pool = [t for t in prev_teams.values() if isinstance(t.get("ortg"), (int, float)) and isinstance(t.get("pace"), (int, float)) and isinstance(t.get("drtg"), (int, float))]
@@ -1145,7 +1338,43 @@ def build_league(L, games, ctx):
             o["books"] = [[b["book"], b["mlH"], b["mlA"]] for b in o["books"]]
         out_games.append(rec)
     block = dict(games=out_games, teams=teamstats, hfa=round(hfa, 3), hfaN=hfan, sigma=cfg["sigma"], shrink=shrink, unit=cfg["unit"],
-                 backtest=bt, formN=FORM_N[L], played=sum(1 for g in games if g["completed"]))
+                 backtest=bt, formN=FORM_N[L], played=sum(1 for g in games if g["completed"]), model="results",
+                 valueGate=value_gate(gate_bt), sample="this season",
+                 marketBetter=bool((gate_bt.get("market") or {}).get("marketBrier") is not None and gate_bt["market"]["marketBrier"] < (gate_bt.get("market") or {}).get("modelBrier", 9)))
+    if L == "NFL" and gate_bt is not bt:
+        block["backtest"] = gate_bt
+        block["sample"] = "2025 and 2026 seasons"
+        block["shrink"] = shrink
+    pack = ctx.get("nhl_pack")
+    if L == "NHL" and pack:
+        oos_dates = sorted({int(pr["date"]) for pr in pack["oos"]})
+        oos_days = [dt.date(int(str(d)[:4]), int(str(d)[4:6]), int(str(d)[6:])) for d in oos_dates]
+        oos_idx, _, _ = load_an("NHL", oos_days, historical=True)
+        after = grade_predictions(pack["oos"], oos_idx)
+        hist = nhl_xg.as_results_games(pack["games"])
+        hrows, hshrink = backtest("NHL", hist)
+        before_preds = []
+        oos_keys = {(pr["date"], pr["home"], pr["away"]) for pr in pack["oos"]}
+        for r in hrows:
+            d = dt.datetime.fromisoformat(r["g"]["date"].replace("Z", "+00:00"))
+            keydate = int(d.strftime("%Y%m%d"))
+            ha, aa = r["g"]["home"].get("abbr"), r["g"]["away"].get("abbr")
+            if (keydate, ha, aa) not in oos_keys:
+                continue
+            p = phi(results_margin("NHL", r["Sh"], r["Sa"], r["hfa"], r["rh"], r["ra"], hshrink) / cfg["sigma"])
+            before_preds.append({"iso": r["g"]["date"], "homeName": r["g"]["home"]["name"], "awayName": r["g"]["away"]["name"], "y": r["y"], "p": p, "date": keydate})
+        before = grade_predictions(before_preds, oos_idx)
+        after["before"] = {k: v for k, v in before.items() if k != "calib"}
+        bt = after
+        block["backtest"] = bt
+        block["model"] = "xg"
+        block["shrink"] = 1
+        block["hfaEmpirical"] = round(hfa, 3)
+        block["hfa"] = round(pack["coef"]["hfa"], 3)
+        block["coef"] = {k: pack["coef"][k] for k in ("bXg", "bGoalie", "hfa", "halfLife", "kTeam", "kGoalie", "n", "season", "holdoutDate")}
+        block["valueGate"] = value_gate(after)
+        block["marketBetter"] = bool(after.get("marketBetter"))
+        block["sample"] = "out of sample: last 40% of 2025-26, plus 2026-27"
     if L == "NFL":
         if nfl_ok and nfl.get("weeks"):
             block["pbpWeeks"] = nfl["weeks"]
@@ -1197,10 +1426,22 @@ def main():
     bref_team = resolve("bref", "Basketball-Reference teams", "bref_teams", load_bref_teams)
     bref_players = resolve("bref", "Basketball-Reference players", "bref_players", load_bref_players)
     nfl = resolve("nflverse", "nflverse EPA", "nflverse", load_nflverse)
+    nhl_pack = None
+    try:
+        print("fitting NHL xG model", file=sys.stderr)
+        nhl_pack = nhl_xg.build()
+        asof = int((TODAY + dt.timedelta(days=1)).strftime("%Y%m%d"))
+        ratings, goalies, most = nhl_xg.live_ratings(nhl_pack, asof)
+        nhl_pack = {**nhl_pack, "ratings": ratings, "goalies": goalies, "most": most}
+        print("NHL coef", nhl_pack["coef"], "oos", len(nhl_pack["oos"]), file=sys.stderr)
+    except Exception:
+        traceback.print_exc()
+        print("NHL xG model unavailable; using the results model", file=sys.stderr)
+        nhl_pack = None
     inj = {}
     for L in LEAGUES:
         inj[L] = resolve("espn", f"{L} injuries", f"inj_{L}", lambda L=L: load_injuries(L), is_ok=lambda d: isinstance(d, dict) and "teams" in d)
-    ctx = dict(mp=mp, nhl=nhl, dfo=dfo, bref_team=bref_team, bref_players=bref_players, nfl=nfl, inj=inj)
+    ctx = dict(mp=mp, nhl=nhl, dfo=dfo, bref_team=bref_team, bref_players=bref_players, nfl=nfl, inj=inj, nhl_pack=nhl_pack)
     data = dict(asOf=now_et(), leagues={})
     for L in LEAGUES:
         print("league", L, file=sys.stderr)

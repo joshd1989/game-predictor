@@ -52,10 +52,19 @@ export const WILD_POOL = 18;
 
 export function defaults(data) {
   const w = {};
+  const nhlXg = data?.L?.NHL?.model === "xg";
   LGS.forEach((L) => {
-    COMPS[L].forEach((c) => { w[`${L}.${c.key}`] = c.def; });
-    ADJS.forEach((a) => { w[`${L}.${a.key}`] = 1; });
-    w[`${L}.shrink`] = data.L[L].shrink;
+    COMPS[L].forEach((c) => {
+      let d = c.def;
+      if (L === "NHL" && nhlXg) d = c.key === "xg" ? 1 : 0;
+      w[`${L}.${c.key}`] = d;
+    });
+    ADJS.forEach((a) => {
+      let d = 1;
+      if (L === "NHL" && nhlXg && (a.key === "rest" || a.key === "inj")) d = 0;
+      w[`${L}.${a.key}`] = d;
+    });
+    w[`${L}.shrink`] = L === "NHL" && nhlXg ? 1 : data.L[L].shrink;
   });
   return w;
 }
